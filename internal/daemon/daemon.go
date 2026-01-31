@@ -138,6 +138,9 @@ func (d *Daemon) runPathScanner(ctx context.Context, pathCfg config.PathConfig) 
 	}
 }
 
+// batchSize is the number of records to accumulate before inserting to the database.
+const batchSize = 100
+
 // runScan performs a single scan of the configured path.
 func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 	scanCtx, cancel := context.WithCancel(ctx)
@@ -166,11 +169,11 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 		return
 	}
 
-	// Perform the scan
+	// Start streaming scan
 	opts := scanner.ScanOptions{
 		FollowSymlinks: pathCfg.FollowSymlinks,
 	}
-	results, err := d.scanner.ScanPathWithOptions(scanCtx, pathCfg.Path, pathCfg.Depth, opts)
+	resultCh, err := d.scanner.ScanPathStreaming(scanCtx, pathCfg.Path, pathCfg.Depth, opts)
 	if err != nil {
 		d.logger.Error("scan failed", "path", pathCfg.Path, "error", err)
 		if err := d.storage.FailScan(context.Background(), scanID, err.Error()); err != nil {
@@ -179,10 +182,28 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 		return
 	}
 
-	// Store results
-	now := time.Now().UTC()
-	records := make([]storage.UsageRecord, 0, len(results))
-	for _, r := range results {
+	// Process results incrementally
+	var totalRecords int
+	batch := make([]storage.UsageRecord, 0, batchSize)
+
+	flushBatch := func() error {
+		if len(batch) == 0 {
+			return nil
+		}
+		if err := d.storage.RecordUsageBatch(scanCtx, batch); err != nil {
+			return err
+		}
+		totalRecords += len(batch)
+		d.logger.Debug("flushed batch",
+			"path", pathCfg.Path,
+			"batch_size", len(batch),
+			"total", totalRecords,
+		)
+		batch = batch[:0]
+		return nil
+	}
+
+	for r := range resultCh {
 		if r.Error != nil {
 			d.logger.Warn("scan error for directory",
 				"directory", r.Path,
@@ -190,31 +211,55 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 			)
 			continue
 		}
-		records = append(records, storage.UsageRecord{
+
+		batch = append(batch, storage.UsageRecord{
 			BasePath:   pathCfg.Path,
 			Directory:  r.Path,
 			SizeBytes:  r.SizeBytes,
-			RecordedAt: now,
+			RecordedAt: time.Now().UTC(),
 			ScanID:     scanID,
 		})
+
+		if len(batch) >= batchSize {
+			if err := flushBatch(); err != nil {
+				d.logger.Error("failed to store batch", "error", err)
+				if err := d.storage.FailScan(context.Background(), scanID, err.Error()); err != nil {
+					d.logger.Error("failed to mark scan as failed", "error", err)
+				}
+				return
+			}
+		}
 	}
 
-	if err := d.storage.RecordUsageBatch(scanCtx, records); err != nil {
-		d.logger.Error("failed to store results", "error", err)
+	// Flush remaining records
+	if err := flushBatch(); err != nil {
+		d.logger.Error("failed to store final batch", "error", err)
 		if err := d.storage.FailScan(context.Background(), scanID, err.Error()); err != nil {
 			d.logger.Error("failed to mark scan as failed", "error", err)
 		}
 		return
 	}
 
-	if err := d.storage.CompleteScan(scanCtx, scanID, len(records)); err != nil {
+	// Check if scan was cancelled
+	if scanCtx.Err() != nil {
+		d.logger.Warn("scan was cancelled",
+			"path", pathCfg.Path,
+			"directories_saved", totalRecords,
+		)
+		if err := d.storage.FailScan(context.Background(), scanID, "cancelled"); err != nil {
+			d.logger.Error("failed to mark scan as failed", "error", err)
+		}
+		return
+	}
+
+	if err := d.storage.CompleteScan(scanCtx, scanID, totalRecords); err != nil {
 		d.logger.Error("failed to complete scan", "error", err)
 		return
 	}
 
 	d.logger.Info("scan completed",
 		"path", pathCfg.Path,
-		"directories", len(records),
+		"directories", totalRecords,
 		"strategy", d.scanner.Strategy(),
 	)
 }

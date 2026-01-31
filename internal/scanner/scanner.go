@@ -135,6 +135,73 @@ func (s *Scanner) ScanPathWithOptions(ctx context.Context, basePath string, dept
 	return results, nil
 }
 
+// ScanPathStreaming scans directories and sends results to a channel as they complete.
+// The channel is closed when scanning is done. Caller should check ctx.Err() after
+// the channel closes to determine if the scan completed successfully or was cancelled.
+func (s *Scanner) ScanPathStreaming(ctx context.Context, basePath string, depth int, opts ScanOptions) (<-chan Result, error) {
+	dirs, err := s.getDirectoriesAtDepth(basePath, depth, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	resultCh := make(chan Result, s.workers*2)
+
+	if len(dirs) == 0 {
+		close(resultCh)
+		return resultCh, nil
+	}
+
+	// Determine strategy if not preset
+	strategy := s.strategy
+	if strategy == nil {
+		strategy = DetectStrategy(basePath, opts.FollowSymlinks)
+	}
+
+	go func() {
+		defer close(resultCh)
+
+		workCh := make(chan string, len(dirs))
+
+		// Spawn worker pool
+		var wg sync.WaitGroup
+		for i := 0; i < s.workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for dir := range workCh {
+					start := time.Now()
+					size, err := strategy.GetSize(ctx, dir)
+					select {
+					case resultCh <- Result{
+						Path:      dir,
+						SizeBytes: size,
+						Error:     err,
+						Duration:  time.Since(start),
+					}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+
+		// Send work
+		for _, dir := range dirs {
+			select {
+			case workCh <- dir:
+			case <-ctx.Done():
+				close(workCh)
+				wg.Wait()
+				return
+			}
+		}
+		close(workCh)
+		wg.Wait()
+	}()
+
+	return resultCh, nil
+}
+
 // ScanSingle scans a single directory and returns its size.
 func (s *Scanner) ScanSingle(ctx context.Context, path string) (Result, error) {
 	return s.ScanSingleWithOptions(ctx, path, ScanOptions{})
