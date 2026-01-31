@@ -10,7 +10,8 @@ import (
 
 // DuStrategy uses the du command to calculate directory size.
 type DuStrategy struct {
-	duPath string
+	duPath         string
+	followSymlinks bool
 }
 
 // Name returns the strategy name.
@@ -18,9 +19,14 @@ func (s *DuStrategy) Name() string {
 	return "du"
 }
 
-// GetSize executes du -sb to get directory size.
+// GetSize executes du -sb (or du -sbL with followSymlinks) to get directory size.
 func (s *DuStrategy) GetSize(ctx context.Context, path string) (int64, error) {
-	cmd := exec.CommandContext(ctx, s.duPath, "-sb", path)
+	args := []string{"-sb"}
+	if s.followSymlinks {
+		args = []string{"-sbL"}
+	}
+	args = append(args, path)
+	cmd := exec.CommandContext(ctx, s.duPath, args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {

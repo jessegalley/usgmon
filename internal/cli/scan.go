@@ -15,8 +15,9 @@ import (
 )
 
 var (
-	scanDepth int
-	scanStore bool
+	scanDepth          int
+	scanStore          bool
+	scanFollowSymlinks bool
 )
 
 var scanCmd = &cobra.Command{
@@ -27,7 +28,8 @@ var scanCmd = &cobra.Command{
 Examples:
   usgmon scan /www/users/bob.com
   usgmon scan /www/users --depth 1
-  usgmon scan /www/users --depth 1 --store`,
+  usgmon scan /www/users --depth 1 --store
+  usgmon scan /www/users --depth 1 --follow-symlinks`,
 	Args: cobra.ExactArgs(1),
 	RunE: runScan,
 }
@@ -35,6 +37,7 @@ Examples:
 func init() {
 	scanCmd.Flags().IntVar(&scanDepth, "depth", 0, "scan depth (0 = scan the path itself)")
 	scanCmd.Flags().BoolVar(&scanStore, "store", false, "store results in database")
+	scanCmd.Flags().BoolVarP(&scanFollowSymlinks, "follow-symlinks", "L", false, "follow symbolic links")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
@@ -57,11 +60,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	opts := scanner.ScanOptions{
+		FollowSymlinks: scanFollowSymlinks,
+	}
+
 	var results []scanner.Result
 
 	if scanDepth == 0 {
 		// Scan single directory
-		result, err := s.ScanSingle(ctx, path)
+		result, err := s.ScanSingleWithOptions(ctx, path, opts)
 		if err != nil {
 			return fmt.Errorf("scan failed: %w", err)
 		}
@@ -69,7 +76,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	} else {
 		// Scan at depth
 		var err error
-		results, err = s.ScanPath(ctx, path, scanDepth)
+		results, err = s.ScanPathWithOptions(ctx, path, scanDepth, opts)
 		if err != nil {
 			return fmt.Errorf("scan failed: %w", err)
 		}

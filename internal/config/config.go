@@ -34,9 +34,10 @@ type ScanConfig struct {
 
 // PathConfig holds configuration for a monitored path.
 type PathConfig struct {
-	Path     string        `mapstructure:"path"`
-	Depth    int           `mapstructure:"depth"`
-	Interval time.Duration `mapstructure:"interval"`
+	Path           string        `mapstructure:"path"`
+	Depth          int           `mapstructure:"depth"`
+	Interval       time.Duration `mapstructure:"interval"`
+	FollowSymlinks bool          `mapstructure:"follow_symlinks"`
 }
 
 // EffectiveInterval returns the interval for this path, falling back to the default.

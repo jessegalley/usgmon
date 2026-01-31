@@ -6,8 +6,34 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 )
+
+// visitedSet tracks visited directories by device+inode pairs to prevent loops.
+type visitedSet map[uint64]map[uint64]bool
+
+// seen checks if a path has been visited, and marks it as visited if not.
+// Returns true if the path was already visited.
+func (v visitedSet) seen(path string) (bool, error) {
+	var stat syscall.Stat_t
+	if err := syscall.Stat(path, &stat); err != nil {
+		return false, err
+	}
+	if v[stat.Dev] == nil {
+		v[stat.Dev] = make(map[uint64]bool)
+	}
+	if v[stat.Dev][stat.Ino] {
+		return true, nil
+	}
+	v[stat.Dev][stat.Ino] = true
+	return false, nil
+}
+
+// ScanOptions holds options for scanning operations.
+type ScanOptions struct {
+	FollowSymlinks bool
+}
 
 // Result represents the result of scanning a single directory.
 type Result struct {
@@ -38,7 +64,13 @@ func New(workers int, strategy Strategy) *Scanner {
 // ScanPath scans all directories at the given depth under basePath.
 // If depth is 0, it scans basePath itself.
 func (s *Scanner) ScanPath(ctx context.Context, basePath string, depth int) ([]Result, error) {
-	dirs, err := s.getDirectoriesAtDepth(basePath, depth)
+	return s.ScanPathWithOptions(ctx, basePath, depth, ScanOptions{})
+}
+
+// ScanPathWithOptions scans all directories at the given depth under basePath with options.
+// If depth is 0, it scans basePath itself.
+func (s *Scanner) ScanPathWithOptions(ctx context.Context, basePath string, depth int, opts ScanOptions) ([]Result, error) {
+	dirs, err := s.getDirectoriesAtDepth(basePath, depth, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -50,7 +82,7 @@ func (s *Scanner) ScanPath(ctx context.Context, basePath string, depth int) ([]R
 	// Determine strategy if not preset
 	strategy := s.strategy
 	if strategy == nil {
-		strategy = DetectStrategy(basePath)
+		strategy = DetectStrategy(basePath, opts.FollowSymlinks)
 	}
 
 	workCh := make(chan string, len(dirs))
@@ -105,9 +137,14 @@ func (s *Scanner) ScanPath(ctx context.Context, basePath string, depth int) ([]R
 
 // ScanSingle scans a single directory and returns its size.
 func (s *Scanner) ScanSingle(ctx context.Context, path string) (Result, error) {
+	return s.ScanSingleWithOptions(ctx, path, ScanOptions{})
+}
+
+// ScanSingleWithOptions scans a single directory and returns its size with options.
+func (s *Scanner) ScanSingleWithOptions(ctx context.Context, path string, opts ScanOptions) (Result, error) {
 	strategy := s.strategy
 	if strategy == nil {
-		strategy = DetectStrategy(path)
+		strategy = DetectStrategy(path, opts.FollowSymlinks)
 	}
 
 	start := time.Now()
@@ -131,7 +168,7 @@ func (s *Scanner) Strategy() string {
 // getDirectoriesAtDepth returns all directories at exactly the specified depth.
 // Depth 0 returns just the basePath itself (if it's a directory).
 // Depth 1 returns immediate subdirectories, etc.
-func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int) ([]string, error) {
+func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int, opts ScanOptions) ([]string, error) {
 	info, err := os.Stat(basePath)
 	if err != nil {
 		return nil, err
@@ -144,7 +181,12 @@ func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int) ([]string, e
 		return []string{basePath}, nil
 	}
 
-	var dirs []string
+	visited := make(visitedSet)
+	// Mark the base path as visited
+	if _, err := visited.seen(basePath); err != nil {
+		return nil, err
+	}
+
 	currentLevel := []string{basePath}
 
 	for d := 0; d < depth; d++ {
@@ -156,16 +198,41 @@ func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int) ([]string, e
 				continue
 			}
 			for _, entry := range entries {
-				if entry.IsDir() && !isSymlink(entry) {
-					nextLevel = append(nextLevel, filepath.Join(dir, entry.Name()))
+				entryPath := filepath.Join(dir, entry.Name())
+
+				if isSymlink(entry) {
+					if !opts.FollowSymlinks {
+						continue
+					}
+					// Follow symlink and check if it points to a directory
+					targetInfo, err := os.Stat(entryPath)
+					if err != nil {
+						// Broken symlink or permission error
+						continue
+					}
+					if !targetInfo.IsDir() {
+						continue
+					}
+					// Check for loops
+					alreadySeen, err := visited.seen(entryPath)
+					if err != nil || alreadySeen {
+						continue
+					}
+					nextLevel = append(nextLevel, entryPath)
+				} else if entry.IsDir() {
+					// Check for loops (even for non-symlinks, in case of bind mounts)
+					alreadySeen, err := visited.seen(entryPath)
+					if err != nil || alreadySeen {
+						continue
+					}
+					nextLevel = append(nextLevel, entryPath)
 				}
 			}
 		}
 		currentLevel = nextLevel
 	}
 
-	dirs = currentLevel
-	return dirs, nil
+	return currentLevel, nil
 }
 
 // isSymlink checks if a directory entry is a symbolic link.

@@ -28,6 +28,13 @@ paths:
     depth: 1        # Scan /home/* directories
     # Uses default interval (1h)
 
+  # Monitor hashpath directories with symlinks
+  # Useful when symlinks distribute users across volumes:
+  # /mailhome/new/a -> /mailhome2/new/a
+  - path: /mailhome/new
+    depth: 2
+    follow_symlinks: true  # Follow symlinks to their targets
+
   # Monitor a specific directory
   # - path: /data/backups
   #   depth: 0      # Scan the directory itself (not subdirectories)

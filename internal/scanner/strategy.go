@@ -19,16 +19,16 @@ type Strategy interface {
 const CephFSMagic = 0x00c36400
 
 // DetectStrategy returns the best available strategy for the given path.
-func DetectStrategy(path string) Strategy {
+func DetectStrategy(path string, followSymlinks bool) Strategy {
 	if isCephFS(path) {
-		return &CephStrategy{}
+		return &CephStrategy{followSymlinks: followSymlinks}
 	}
 
 	if duPath, err := exec.LookPath("du"); err == nil {
-		return &DuStrategy{duPath: duPath}
+		return &DuStrategy{duPath: duPath, followSymlinks: followSymlinks}
 	}
 
-	return &WalkStrategy{}
+	return &WalkStrategy{followSymlinks: followSymlinks}
 }
 
 // isCephFS checks if the path is on a CephFS filesystem.
