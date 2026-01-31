@@ -138,37 +138,47 @@ func (s *Scanner) ScanPathWithOptions(ctx context.Context, basePath string, dept
 // ScanPathStreaming scans directories and sends results to a channel as they complete.
 // The channel is closed when scanning is done. Caller should check ctx.Err() after
 // the channel closes to determine if the scan completed successfully or was cancelled.
+//
+// This implementation uses streaming enumeration: intermediate directory levels (0 to depth-1)
+// are enumerated synchronously (typically small), then level N directories are streamed
+// directly to workers as they're discovered. This allows workers to start processing
+// immediately rather than waiting for all directories to be enumerated first.
 func (s *Scanner) ScanPathStreaming(ctx context.Context, basePath string, depth int, opts ScanOptions) (<-chan Result, error) {
-	dirs, err := s.getDirectoriesAtDepth(basePath, depth, opts)
+	// Validate basePath upfront
+	info, err := os.Stat(basePath)
 	if err != nil {
 		return nil, err
 	}
-
-	resultCh := make(chan Result, s.workers*2)
-
-	if len(dirs) == 0 {
+	if !info.IsDir() {
+		resultCh := make(chan Result)
 		close(resultCh)
 		return resultCh, nil
 	}
 
-	// Determine strategy if not preset
+	// Determine strategy
 	strategy := s.strategy
 	if strategy == nil {
 		strategy = DetectStrategy(basePath, opts.FollowSymlinks)
 	}
 
+	// Bounded channels - no pre-sizing to len(dirs)
+	dirCh := make(chan string, s.workers*4)
+	resultCh := make(chan Result, s.workers*2)
+
+	// Start enumerator goroutine FIRST
+	go func() {
+		s.streamDirectoriesAtDepth(ctx, basePath, depth, opts, dirCh)
+	}()
+
+	// Start workers immediately - they begin as soon as dirs arrive
 	go func() {
 		defer close(resultCh)
-
-		workCh := make(chan string, len(dirs))
-
-		// Spawn worker pool
 		var wg sync.WaitGroup
 		for i := 0; i < s.workers; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				for dir := range workCh {
+				for dir := range dirCh {
 					start := time.Now()
 					size, err := strategy.GetSize(ctx, dir)
 					select {
@@ -184,18 +194,6 @@ func (s *Scanner) ScanPathStreaming(ctx context.Context, basePath string, depth 
 				}
 			}()
 		}
-
-		// Send work
-		for _, dir := range dirs {
-			select {
-			case workCh <- dir:
-			case <-ctx.Done():
-				close(workCh)
-				wg.Wait()
-				return
-			}
-		}
-		close(workCh)
 		wg.Wait()
 	}()
 
@@ -300,6 +298,128 @@ func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int, opts ScanOpt
 	}
 
 	return currentLevel, nil
+}
+
+// streamDirectoriesAtDepth enumerates directories at the specified depth and streams them
+// to dirCh as they're discovered. Levels 0 to depth-1 are enumerated synchronously (small),
+// then level N directories are streamed directly to the channel.
+// The channel is closed when enumeration completes or context is cancelled.
+func (s *Scanner) streamDirectoriesAtDepth(ctx context.Context, basePath string, depth int, opts ScanOptions, dirCh chan<- string) {
+	defer close(dirCh)
+
+	// Handle depth 0: just send basePath
+	if depth == 0 {
+		select {
+		case dirCh <- basePath:
+		case <-ctx.Done():
+		}
+		return
+	}
+
+	visited := make(visitedSet)
+	// Mark the base path as visited
+	if _, err := visited.seen(basePath); err != nil {
+		return
+	}
+
+	// Enumerate levels 0 to depth-1 synchronously (these are typically small)
+	currentLevel := []string{basePath}
+	for d := 0; d < depth-1; d++ {
+		var nextLevel []string
+		for _, dir := range currentLevel {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
+
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				// Skip directories we can't read
+				continue
+			}
+			for _, entry := range entries {
+				entryPath := filepath.Join(dir, entry.Name())
+
+				if isSymlink(entry) {
+					if !opts.FollowSymlinks {
+						continue
+					}
+					// Follow symlink and check if it points to a directory
+					targetInfo, err := os.Stat(entryPath)
+					if err != nil {
+						continue
+					}
+					if !targetInfo.IsDir() {
+						continue
+					}
+					alreadySeen, err := visited.seen(entryPath)
+					if err != nil || alreadySeen {
+						continue
+					}
+					nextLevel = append(nextLevel, entryPath)
+				} else if entry.IsDir() {
+					alreadySeen, err := visited.seen(entryPath)
+					if err != nil || alreadySeen {
+						continue
+					}
+					nextLevel = append(nextLevel, entryPath)
+				}
+			}
+		}
+		currentLevel = nextLevel
+	}
+
+	// Stream the final level (level N) directly to the channel as directories are discovered
+	for _, dir := range currentLevel {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			entryPath := filepath.Join(dir, entry.Name())
+
+			var shouldSend bool
+
+			if isSymlink(entry) {
+				if !opts.FollowSymlinks {
+					continue
+				}
+				targetInfo, err := os.Stat(entryPath)
+				if err != nil {
+					continue
+				}
+				if !targetInfo.IsDir() {
+					continue
+				}
+				alreadySeen, err := visited.seen(entryPath)
+				if err != nil || alreadySeen {
+					continue
+				}
+				shouldSend = true
+			} else if entry.IsDir() {
+				alreadySeen, err := visited.seen(entryPath)
+				if err != nil || alreadySeen {
+					continue
+				}
+				shouldSend = true
+			}
+
+			if shouldSend {
+				select {
+				case dirCh <- entryPath:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}
 }
 
 // isSymlink checks if a directory entry is a symbolic link.
