@@ -69,6 +69,7 @@ func (s *SQLiteStorage) Initialize(ctx context.Context) error {
 		CREATE INDEX IF NOT EXISTS idx_usage_dir_time ON usage_records(directory, recorded_at);
 		CREATE INDEX IF NOT EXISTS idx_usage_base_path ON usage_records(base_path);
 		CREATE INDEX IF NOT EXISTS idx_usage_scan_id ON usage_records(scan_id);
+		CREATE INDEX IF NOT EXISTS idx_usage_base_path_time ON usage_records(base_path, recorded_at, directory, size_bytes);
 	`
 
 	_, err := s.db.ExecContext(ctx, schema)
@@ -256,4 +257,89 @@ func (s *SQLiteStorage) GetLatestUsage(ctx context.Context, directory string) (*
 	}
 
 	return &r, nil
+}
+
+// GetTopChangers finds directories with the largest usage changes over a time interval.
+func (s *SQLiteStorage) GetTopChangers(ctx context.Context, opts TopChangerOptions) ([]DirectoryChange, error) {
+	// Normalize base path: remove trailing slash for consistent comparison
+	basePath := opts.BasePath
+	if len(basePath) > 1 && basePath[len(basePath)-1] == '/' {
+		basePath = basePath[:len(basePath)-1]
+	}
+
+	query := `
+		WITH ranked AS (
+			SELECT
+				directory,
+				base_path,
+				size_bytes,
+				recorded_at,
+				ROW_NUMBER() OVER (PARTITION BY directory ORDER BY recorded_at ASC) AS rn_first,
+				ROW_NUMBER() OVER (PARTITION BY directory ORDER BY recorded_at DESC) AS rn_last
+			FROM usage_records
+			WHERE (base_path = ? OR base_path = ? || '/')
+			  AND recorded_at BETWEEN ? AND ?
+		),
+		changes AS (
+			SELECT
+				r1.directory,
+				r1.base_path,
+				r1.size_bytes AS start_size,
+				r1.recorded_at AS start_time,
+				r2.size_bytes AS end_size,
+				r2.recorded_at AS end_time
+			FROM ranked r1
+			JOIN ranked r2 ON r1.directory = r2.directory
+			WHERE r1.rn_first = 1 AND r2.rn_last = 1
+		)
+		SELECT
+			directory, base_path, start_size, end_size, start_time, end_time,
+			(end_size - start_size) AS change_bytes,
+			CASE WHEN start_size > 0 THEN ROUND(100.0 * (end_size - start_size) / start_size, 2) ELSE 0 END AS change_percent
+		FROM changes
+		WHERE ABS(end_size - start_size) >= ?
+		  AND (? = 'both' OR (? = 'increase' AND end_size > start_size) OR (? = 'decrease' AND end_size < start_size))
+		ORDER BY ABS(end_size - start_size) DESC
+		LIMIT ?;
+	`
+
+	rows, err := s.db.QueryContext(ctx, query,
+		basePath,
+		basePath,
+		opts.Since.UTC(),
+		opts.Until.UTC(),
+		opts.MinChangeBytes,
+		opts.Direction,
+		opts.Direction,
+		opts.Direction,
+		opts.Limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("querying top changers: %w", err)
+	}
+	defer rows.Close()
+
+	var results []DirectoryChange
+	for rows.Next() {
+		var dc DirectoryChange
+		if err := rows.Scan(
+			&dc.Directory,
+			&dc.BasePath,
+			&dc.StartSize,
+			&dc.EndSize,
+			&dc.StartTime,
+			&dc.EndTime,
+			&dc.ChangeBytes,
+			&dc.ChangePercent,
+		); err != nil {
+			return nil, fmt.Errorf("scanning row: %w", err)
+		}
+		results = append(results, dc)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterating rows: %w", err)
+	}
+
+	return results, nil
 }

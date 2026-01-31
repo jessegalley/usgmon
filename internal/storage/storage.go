@@ -34,6 +34,28 @@ type QueryOptions struct {
 	Limit     int
 }
 
+// TopChangerOptions specifies parameters for finding top changers.
+type TopChangerOptions struct {
+	BasePath       string
+	Since          time.Time
+	Until          time.Time
+	Direction      string // "increase", "decrease", "both"
+	MinChangeBytes int64
+	Limit          int
+}
+
+// DirectoryChange represents a directory's usage change over time.
+type DirectoryChange struct {
+	Directory     string
+	BasePath      string
+	StartSize     int64
+	EndSize       int64
+	StartTime     time.Time
+	EndTime       time.Time
+	ChangeBytes   int64
+	ChangePercent float64
+}
+
 // Storage defines the interface for persisting usage data.
 type Storage interface {
 	// Initialize prepares the storage (creates tables, etc.).
@@ -62,4 +84,7 @@ type Storage interface {
 
 	// GetLatestUsage retrieves the most recent usage record for a directory.
 	GetLatestUsage(ctx context.Context, directory string) (*UsageRecord, error)
+
+	// GetTopChangers finds directories with the largest usage changes over a time interval.
+	GetTopChangers(ctx context.Context, opts TopChangerOptions) ([]DirectoryChange, error)
 }

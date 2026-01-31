@@ -34,6 +34,7 @@ at configurable depths and stores historical data in SQLite for trend analysis.`
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(queryCmd)
+	rootCmd.AddCommand(topCmd)
 	rootCmd.AddCommand(versionCmd)
 }
 
