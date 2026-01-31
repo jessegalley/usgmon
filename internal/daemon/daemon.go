@@ -122,6 +122,7 @@ func (d *Daemon) runPathScanner(ctx context.Context, pathCfg config.PathConfig) 
 		"path", pathCfg.Path,
 		"depth", pathCfg.Depth,
 		"interval", interval,
+		"follow_symlinks", pathCfg.FollowSymlinks,
 	)
 
 	// Run initial scan immediately
@@ -166,7 +167,10 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 	}
 
 	// Perform the scan
-	results, err := d.scanner.ScanPath(scanCtx, pathCfg.Path, pathCfg.Depth)
+	opts := scanner.ScanOptions{
+		FollowSymlinks: pathCfg.FollowSymlinks,
+	}
+	results, err := d.scanner.ScanPathWithOptions(scanCtx, pathCfg.Path, pathCfg.Depth, opts)
 	if err != nil {
 		d.logger.Error("scan failed", "path", pathCfg.Path, "error", err)
 		if err := d.storage.FailScan(context.Background(), scanID, err.Error()); err != nil {
