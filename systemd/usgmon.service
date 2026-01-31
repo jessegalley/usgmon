@@ -1,0 +1,25 @@
+[Unit]
+Description=Directory Usage Monitor Daemon
+Documentation=https://github.com/jgalley/usgmon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/usgmon serve --config /etc/usgmon/usgmon.yaml
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+ReadWritePaths=/var/lib/usgmon
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=usgmon
+
+[Install]
+WantedBy=multi-user.target

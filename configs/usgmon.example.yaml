@@ -1,0 +1,34 @@
+# usgmon configuration file
+
+database:
+  # Path to SQLite database file
+  path: /var/lib/usgmon/usgmon.db
+
+logging:
+  # Log level: debug, info, warn, error
+  level: info
+  # Log format: text or json
+  format: text
+
+scan:
+  # Default scan interval (can be overridden per path)
+  interval: 1h
+  # Number of worker goroutines for parallel scanning
+  workers: 4
+
+# Paths to monitor
+paths:
+  # Monitor user home directories
+  - path: /www/users
+    depth: 1        # Scan /www/users/* directories
+    interval: 30m   # Scan every 30 minutes (overrides default)
+
+  # Monitor home directories
+  - path: /home
+    depth: 1        # Scan /home/* directories
+    # Uses default interval (1h)
+
+  # Monitor a specific directory
+  # - path: /data/backups
+  #   depth: 0      # Scan the directory itself (not subdirectories)
+  #   interval: 6h  # Scan every 6 hours
