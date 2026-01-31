@@ -172,6 +172,7 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 	// Start streaming scan
 	opts := scanner.ScanOptions{
 		FollowSymlinks: pathCfg.FollowSymlinks,
+		Exclude:        pathCfg.Exclude,
 	}
 	resultCh, err := d.scanner.ScanPathStreaming(scanCtx, pathCfg.Path, pathCfg.Depth, opts)
 	if err != nil {
@@ -211,6 +212,13 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 			)
 			continue
 		}
+
+		d.logger.Debug("scanned directory",
+			"directory", r.Path,
+			"size_bytes", r.SizeBytes,
+			"strategy", d.scanner.Strategy(),
+			"duration", r.Duration,
+		)
 
 		batch = append(batch, storage.UsageRecord{
 			BasePath:   pathCfg.Path,

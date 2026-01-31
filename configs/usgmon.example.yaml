@@ -27,6 +27,9 @@ paths:
   - path: /home
     depth: 1        # Scan /home/* directories
     # Uses default interval (1h)
+    exclude:        # Directories to skip during enumeration
+      - /home/backup
+      - /home/shared/temp
 
   # Monitor hashpath directories with symlinks
   # Useful when symlinks distribute users across volumes:

@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -33,6 +34,7 @@ func (v visitedSet) seen(path string) (bool, error) {
 // ScanOptions holds options for scanning operations.
 type ScanOptions struct {
 	FollowSymlinks bool
+	Exclude        []string // paths to skip during enumeration
 }
 
 // Result represents the result of scanning a single directory.
@@ -283,11 +285,17 @@ func (s *Scanner) getDirectoriesAtDepth(basePath string, depth int, opts ScanOpt
 					if err != nil || alreadySeen {
 						continue
 					}
+					if shouldExclude(entryPath, opts.Exclude) {
+						continue
+					}
 					nextLevel = append(nextLevel, entryPath)
 				} else if entry.IsDir() {
 					// Check for loops (even for non-symlinks, in case of bind mounts)
 					alreadySeen, err := visited.seen(entryPath)
 					if err != nil || alreadySeen {
+						continue
+					}
+					if shouldExclude(entryPath, opts.Exclude) {
 						continue
 					}
 					nextLevel = append(nextLevel, entryPath)
@@ -357,10 +365,16 @@ func (s *Scanner) streamDirectoriesAtDepth(ctx context.Context, basePath string,
 					if err != nil || alreadySeen {
 						continue
 					}
+					if shouldExclude(entryPath, opts.Exclude) {
+						continue
+					}
 					nextLevel = append(nextLevel, entryPath)
 				} else if entry.IsDir() {
 					alreadySeen, err := visited.seen(entryPath)
 					if err != nil || alreadySeen {
+						continue
+					}
+					if shouldExclude(entryPath, opts.Exclude) {
 						continue
 					}
 					nextLevel = append(nextLevel, entryPath)
@@ -402,10 +416,16 @@ func (s *Scanner) streamDirectoriesAtDepth(ctx context.Context, basePath string,
 				if err != nil || alreadySeen {
 					continue
 				}
+				if shouldExclude(entryPath, opts.Exclude) {
+					continue
+				}
 				shouldSend = true
 			} else if entry.IsDir() {
 				alreadySeen, err := visited.seen(entryPath)
 				if err != nil || alreadySeen {
+					continue
+				}
+				if shouldExclude(entryPath, opts.Exclude) {
 					continue
 				}
 				shouldSend = true
@@ -425,4 +445,14 @@ func (s *Scanner) streamDirectoriesAtDepth(ctx context.Context, basePath string,
 // isSymlink checks if a directory entry is a symbolic link.
 func isSymlink(entry fs.DirEntry) bool {
 	return entry.Type()&fs.ModeSymlink != 0
+}
+
+// shouldExclude checks if a path should be excluded from scanning.
+func shouldExclude(path string, excludes []string) bool {
+	for _, exc := range excludes {
+		if path == exc || strings.HasPrefix(path, exc+"/") {
+			return true
+		}
+	}
+	return false
 }

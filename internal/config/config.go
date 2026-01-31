@@ -38,6 +38,7 @@ type PathConfig struct {
 	Depth          int           `mapstructure:"depth"`
 	Interval       time.Duration `mapstructure:"interval"`
 	FollowSymlinks bool          `mapstructure:"follow_symlinks"`
+	Exclude        []string      `mapstructure:"exclude"`
 }
 
 // EffectiveInterval returns the interval for this path, falling back to the default.
