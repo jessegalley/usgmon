@@ -216,7 +216,7 @@ func (d *Daemon) runScan(ctx context.Context, pathCfg config.PathConfig) {
 		d.logger.Debug("scanned directory",
 			"directory", r.Path,
 			"size_bytes", r.SizeBytes,
-			"strategy", d.scanner.Strategy(),
+			"strategy", r.Strategy,
 			"duration", r.Duration,
 		)
 

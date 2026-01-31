@@ -43,6 +43,7 @@ type Result struct {
 	SizeBytes int64
 	Error     error
 	Duration  time.Duration
+	Strategy  string
 }
 
 // Scanner orchestrates directory size scanning with a worker pool.
@@ -84,7 +85,7 @@ func (s *Scanner) ScanPathWithOptions(ctx context.Context, basePath string, dept
 	// Determine strategy if not preset
 	strategy := s.strategy
 	if strategy == nil {
-		strategy = DetectStrategy(basePath, opts.FollowSymlinks)
+		strategy = NewAutoStrategy()
 	}
 
 	workCh := make(chan string, len(dirs))
@@ -98,12 +99,18 @@ func (s *Scanner) ScanPathWithOptions(ctx context.Context, basePath string, dept
 			defer wg.Done()
 			for dir := range workCh {
 				start := time.Now()
-				size, err := strategy.GetSize(ctx, dir)
+				// Get effective strategy (handles AutoStrategy case)
+				effectiveStrategy := strategy
+				if auto, ok := strategy.(*AutoStrategy); ok {
+					effectiveStrategy = auto.StrategyFor(dir)
+				}
+				size, err := effectiveStrategy.GetSize(ctx, dir)
 				resultCh <- Result{
 					Path:      dir,
 					SizeBytes: size,
 					Error:     err,
 					Duration:  time.Since(start),
+					Strategy:  effectiveStrategy.Name(),
 				}
 			}
 		}()
@@ -160,7 +167,7 @@ func (s *Scanner) ScanPathStreaming(ctx context.Context, basePath string, depth 
 	// Determine strategy
 	strategy := s.strategy
 	if strategy == nil {
-		strategy = DetectStrategy(basePath, opts.FollowSymlinks)
+		strategy = NewAutoStrategy()
 	}
 
 	// Bounded channels - no pre-sizing to len(dirs)
@@ -182,13 +189,19 @@ func (s *Scanner) ScanPathStreaming(ctx context.Context, basePath string, depth 
 				defer wg.Done()
 				for dir := range dirCh {
 					start := time.Now()
-					size, err := strategy.GetSize(ctx, dir)
+					// Get effective strategy (handles AutoStrategy case)
+					effectiveStrategy := strategy
+					if auto, ok := strategy.(*AutoStrategy); ok {
+						effectiveStrategy = auto.StrategyFor(dir)
+					}
+					size, err := effectiveStrategy.GetSize(ctx, dir)
 					select {
 					case resultCh <- Result{
 						Path:      dir,
 						SizeBytes: size,
 						Error:     err,
 						Duration:  time.Since(start),
+						Strategy:  effectiveStrategy.Name(),
 					}:
 					case <-ctx.Done():
 						return
@@ -211,16 +224,23 @@ func (s *Scanner) ScanSingle(ctx context.Context, path string) (Result, error) {
 func (s *Scanner) ScanSingleWithOptions(ctx context.Context, path string, opts ScanOptions) (Result, error) {
 	strategy := s.strategy
 	if strategy == nil {
-		strategy = DetectStrategy(path, opts.FollowSymlinks)
+		strategy = NewAutoStrategy()
+	}
+
+	// Get effective strategy (handles AutoStrategy case)
+	effectiveStrategy := strategy
+	if auto, ok := strategy.(*AutoStrategy); ok {
+		effectiveStrategy = auto.StrategyFor(path)
 	}
 
 	start := time.Now()
-	size, err := strategy.GetSize(ctx, path)
+	size, err := effectiveStrategy.GetSize(ctx, path)
 	return Result{
 		Path:      path,
 		SizeBytes: size,
 		Error:     err,
 		Duration:  time.Since(start),
+		Strategy:  effectiveStrategy.Name(),
 	}, nil
 }
 
