@@ -10,9 +10,7 @@ import (
 )
 
 // CephStrategy reads directory size from CephFS xattr.
-type CephStrategy struct {
-	followSymlinks bool
-}
+type CephStrategy struct{}
 
 // Name returns the strategy name.
 func (s *CephStrategy) Name() string {
@@ -20,6 +18,8 @@ func (s *CephStrategy) Name() string {
 }
 
 // GetSize reads the ceph.dir.rbytes xattr to get directory size.
+// Note: This always resolves the path first (in case it's a symlink to a directory),
+// allowing size calculation for symlinked directories at target depth.
 func (s *CephStrategy) GetSize(ctx context.Context, path string) (int64, error) {
 	select {
 	case <-ctx.Done():
@@ -27,14 +27,11 @@ func (s *CephStrategy) GetSize(ctx context.Context, path string) (int64, error) 
 	default:
 	}
 
-	// Resolve symlinks first if configured
-	resolvedPath := path
-	if s.followSymlinks {
-		var err error
-		resolvedPath, err = filepath.EvalSymlinks(path)
-		if err != nil {
-			return 0, fmt.Errorf("resolving symlink: %w", err)
-		}
+	// Resolve symlinks - the target directory at depth N may be a symlink
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		// If we can't resolve, try the original path
+		resolvedPath = path
 	}
 
 	buf := make([]byte, 64)

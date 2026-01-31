@@ -19,16 +19,19 @@ type Strategy interface {
 const CephFSMagic = 0x00c36400
 
 // DetectStrategy returns the best available strategy for the given path.
+// Note: followSymlinks only affects directory enumeration (finding dirs at depth N),
+// not size calculation. Strategies always resolve the target path but never follow
+// symlinks inside directories during size calculation.
 func DetectStrategy(path string, followSymlinks bool) Strategy {
 	if isCephFS(path) {
-		return &CephStrategy{followSymlinks: followSymlinks}
+		return &CephStrategy{}
 	}
 
 	if duPath, err := exec.LookPath("du"); err == nil {
-		return &DuStrategy{duPath: duPath, followSymlinks: followSymlinks}
+		return &DuStrategy{duPath: duPath}
 	}
 
-	return &WalkStrategy{followSymlinks: followSymlinks}
+	return &WalkStrategy{}
 }
 
 // isCephFS checks if the path is on a CephFS filesystem.

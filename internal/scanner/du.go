@@ -10,8 +10,7 @@ import (
 
 // DuStrategy uses the du command to calculate directory size.
 type DuStrategy struct {
-	duPath         string
-	followSymlinks bool
+	duPath string
 }
 
 // Name returns the strategy name.
@@ -19,13 +18,13 @@ func (s *DuStrategy) Name() string {
 	return "du"
 }
 
-// GetSize executes du -sb (or du -sbL with followSymlinks) to get directory size.
+// GetSize executes du -sb to get directory size.
+// Note: du without -L follows the argument symlink (if path is a symlink) but does
+// not follow symlinks inside the directory. This is the desired behavior - we want
+// to calculate size of symlinked directories at target depth, but not traverse
+// broken or circular symlinks inside them.
 func (s *DuStrategy) GetSize(ctx context.Context, path string) (int64, error) {
-	args := []string{"-sb"}
-	if s.followSymlinks {
-		args = []string{"-sbL"}
-	}
-	args = append(args, path)
+	args := []string{"-sb", path}
 	cmd := exec.CommandContext(ctx, s.duPath, args...)
 	output, err := cmd.Output()
 	if err != nil {
